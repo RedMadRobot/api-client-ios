@@ -5,13 +5,12 @@
 //  Copyright © 2019 RedMadRobot. All rights reserved.
 //
 
-import Apexy
 import Foundation
 import Alamofire
 
 /// API Client.
 open class AlamofireClient: Client {
-
+    
     /// A closure used to observe result of every response from the server.
     public typealias ResponseObserver = (URLRequest?, HTTPURLResponse?, Data?, Error?) -> Void
 
@@ -179,6 +178,32 @@ open class AlamofireClient: Client {
         progress.cancellationHandler = { [weak request] in request?.cancel() }
         return progress
     }
+    
+    @available(macOS 12, iOS 15, watchOS 8, tvOS 15, *)
+    public func request<T>(_ endpoint: T) async throws -> T.Content where T : Endpoint {
+        typealias ContentContinuation = CheckedContinuation<T.Content, Error>
+        let progressWrapper = ProgressWrapper()
+        return try await withTaskCancellationHandler(handler: {
+            progressWrapper.cancel()
+        }, operation: {
+            try await withCheckedThrowingContinuation { (continuation: ContentContinuation) in
+                progressWrapper.progress = request(endpoint) { continuation.resume(with: $0) }
+            }
+        })
+    }
+    
+    @available(macOS 12, iOS 15, watchOS 8, tvOS 15, *)
+    public func upload<T>(_ endpoint: T) async throws -> T.Content where T : UploadEndpoint {
+        typealias ContentContinuation = CheckedContinuation<T.Content, Error>
+        let progressWrapper = ProgressWrapper()
+        return try await withTaskCancellationHandler(handler: {
+            progressWrapper.cancel()
+        }, operation: {
+            try await withCheckedThrowingContinuation { (continuation: ContentContinuation) in
+                progressWrapper.progress = upload(endpoint) { continuation.resume(with: $0) }
+            }
+        })
+    }
 
     // MARK: - Private
 
@@ -219,5 +244,29 @@ public extension Error {
             return underlyingError
         }
         return self
+    }
+}
+
+@available(macOS 12, iOS 15, watchOS 8, tvOS 15, *)
+private final class ProgressWrapper {
+    
+    var progress: Progress? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _progress
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _progress = newValue
+        }
+    }
+    
+    private var _progress: Progress?
+    private let lock = NSLock()
+    
+    func cancel() {
+        progress?.cancel()
     }
 }

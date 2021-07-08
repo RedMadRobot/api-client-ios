@@ -1,5 +1,4 @@
 import Foundation
-import Apexy
 
 open class URLSessionClient: Client {
     
@@ -127,6 +126,68 @@ open class URLSessionClient: Client {
         
         return task.progress
     }
+    
+    @available(macOS 12, iOS 15, watchOS 8, tvOS 15, *)
+    open func request<T>(_ endpoint: T) async throws -> T.Content where T : Endpoint {
+        var request = try endpoint.makeRequest()
+        request = try requestAdapter.adapt(request)
+        var response: (data: Data, response: URLResponse)?
+        var error: Error?
+        
+        defer {
+            let wrapper = ResponseObserverWrapper(request: request, data: response?.data, response: response?.response, error: error)
+            completionQueue.async {
+                self.responseObserver?(wrapper.request, wrapper.response as? HTTPURLResponse, wrapper.data, wrapper.error)
+            }
+        }
+        
+        do {
+            response = try await session.data(for: request)
+            
+            if let httpResponse = response?.response as? HTTPURLResponse {
+                try endpoint.validate(request, response: httpResponse, data: response?.data)
+            }
+            
+            let data = response?.data ?? Data()
+            return try endpoint.content(from: response?.response, with: data)
+        } catch let someError {
+            error = someError
+            throw someError
+        }
+    }
+    
+    @available(macOS 12, iOS 15, watchOS 8, tvOS 15, *)
+    open func upload<T>(_ endpoint: T) async throws -> T.Content where T : UploadEndpoint {
+        var request: (request: URLRequest, body: UploadEndpointBody) = try endpoint.makeRequest()
+        request.request = try requestAdapter.adapt(request.request)
+        var response: (data: Data, response: URLResponse)?
+        var error: Error?
+        
+        defer {
+            let wrapper = ResponseObserverWrapper(request: request.request, data: response?.data, response: response?.response, error: error)
+            completionQueue.async {
+                self.responseObserver?(wrapper.request, wrapper.response as? HTTPURLResponse, wrapper.data, wrapper.error)
+            }
+        }
+        
+        do {
+            switch request {
+            case (_, .data(let data)):
+                response = try await session.upload(for: request.request, from: data)
+            case (_, .file(let url)):
+                response = try await session.upload(for: request.request, fromFile: url)
+            case (_, .stream):
+                throw URLSessionClientError.uploadStreamUnimplemented
+            }
+            
+            let data = response?.data ?? Data()
+            return try endpoint.content(from: response?.response, with: data)
+        } catch let someError {
+            error = someError
+            throw someError
+        }
+    }
+    
 }
 
 enum URLSessionClientError: LocalizedError {
@@ -141,4 +202,11 @@ enum URLSessionClientError: LocalizedError {
             """
         }
     }
+}
+
+private struct ResponseObserverWrapper {
+    var request: URLRequest
+    var data: Data?
+    var response: URLResponse?
+    var error: Error?
 }
